@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+
+import sys, socket, select, time, json, random
+
+# Your ID number
+my_id = sys.argv[1]
+
+# The ID numbers of all the other replicas
+replica_ids = sys.argv[2:]
+
+# Connect to the network. All messages to/from other replicas and clients will
+# occur over this socket
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+sock.connect(my_id)
+
+last = 0
+term = 0
+state = 'follower'
+curr_leader = 'FFFF'
+voted = False
+
+data = {}
+transaction_log = []
+
+
+timeout = (random.randint(150, 300))/1000
+
+while True:
+	ready = select.select([sock], [], [], 0.1)[0]
+	
+	if sock in ready:
+		
+		#add timeout logic
+		if state == 'candidate':
+			print("In candidate loop " + my_id)
+			# TODO add election stuff
+			term += 1
+			votes = 1
+			voted = False
+			curr_time = time.time()
+			while state == 'candidate' and (time.time() < curr_time + timeout):
+				
+				for r in replica_ids:
+					leader_msg = {
+						'src': my_id, 
+						'dst': r,
+						'leader': my_id,
+						'type': 'append',
+						'term': term
+					}
+					sock.send(bytes(json.dumps(leader_msg), 'ascii'))
+
+				msg_raw = sock.recv(32768)
+		
+				if len(msg_raw) == 0: continue
+				msg = json.loads(msg_raw)
+
+				if msg['type'] == 'ok':
+					votes += 1
+					print(str(votes) + " for " + my_id)
+					if votes > len(replica_ids)/2:
+						print(my_id + " is now leader")
+						curr_leader = my_id
+						state = 'leader'
+						break
+
+				if msg['type'] == 'append':
+					if msg['term'] >= term and not voted:
+						curr_leader = msg['src']
+						response = {
+							'src': my_id, 
+							'dst': msg['src'],
+							'leader': curr_leader,
+							'type': 'ok',
+						}
+						sock.send(bytes(json.dumps(response), 'ascii'))
+						time.sleep(.2)
+						state = 'follower'
+
+
+		if state == 'follower':
+			print("In follower loop " + my_id)
+			last_time = float()
+			while state == 'follower':
+				msg_raw = sock.recv(32768)
+		
+				if len(msg_raw) == 0: continue
+				msg = json.loads(msg_raw)
+
+				if time.time() + 1> last_time + timeout:
+					state = 'candidate'
+		
+				# For now, ignore get() and put() from clients
+				if msg['type'] in ['get', 'put']:
+					if msg['type'] == 'get':
+						response = {
+							'src': my_id, 
+							'dst': msg['src'],
+							'leader': curr_leader,
+							'type': 'redirect',
+							'MID': msg['MID']
+						}
+						sock.send(bytes(json.dumps(response), 'ascii'))
+					elif msg['type'] == 'put':
+						response = {
+							'src': my_id, 
+							'dst': msg['src'],
+							'leader': curr_leader,
+							'type': 'redirect',
+							'MID': msg['MID']
+						}						
+						sock.send(bytes(json.dumps(response), 'ascii'))
+				elif msg['type'] == 'append':
+					if msg['term'] >= term:
+						last_time = time.time()
+						curr_leader = msg['leader']
+						response = {
+							'src': my_id, 
+							'dst': msg['src'],
+							'leader': curr_leader,
+							'type': 'ok',
+						}
+						sock.send(bytes(json.dumps(response), 'ascii'))
+
+		if state == 'leader':
+			print("In leader statement " + my_id)
+			while state == 'leader':
+				print("In leader loop " + my_id)
+				clock = time.time()
+				if clock - last > .1:
+					for r in replica_ids:
+						msg = {
+							'src': my_id, 
+							'dst': r,
+							'leader': my_id,
+							'type': 'append',
+							'term': term
+						}
+						sock.send(bytes(json.dumps(response), 'ascii'))
+
+				msg_raw = sock.recv(32768)
+		
+				if len(msg_raw) == 0: continue
+				msg = json.loads(msg_raw)
+
+				if msg['type'] == 'append':
+					if msg['term'] >= term:
+						curr_leader = msg['leader']
+						response = {
+							'src': my_id, 
+							'dst': msg['src'],
+							'leader': curr_leader,
+							'type': 'ok',
+						}
+						sock.send(bytes(json.dumps(response), 'ascii'))
+						state = 'follower'
+				elif msg['type'] == 'get':
+					if msg['key'] in data:
+						response = {
+							'src': my_id,
+							'dst': msg['src'],
+							'leader': my_id,
+							'type': 'ok',
+							'MID': msg['MID'],
+							'value': data[msg['key']]
+						}
+						sock.send(bytes(json.dumps(response), 'ascii'))
+				elif msg['type'] == 'put':
+					data[msg['key']] = msg['value']
+					mapping = (msg['key'], msg['value'])
+					temp_dict = {term: mapping}
+					transaction_log.append(temp_dict)
+					response = {
+							'src': my_id,
+							'dst': msg['src'],
+							'leader': my_id,
+							'type': 'ok',
+							'MID': msg['MID'],
+						}
+					sock.send(bytes(json.dumps(response), 'ascii'))
+				
