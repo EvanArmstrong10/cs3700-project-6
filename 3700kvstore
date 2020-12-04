@@ -16,8 +16,8 @@ sock.connect(my_id)
 last = 0
 term = 0
 state = 'follower'
+global curr_leader
 curr_leader = 'FFFF'
-voted = False
 
 data = {}
 transaction_log = []
@@ -30,13 +30,11 @@ while True:
 	
 	if sock in ready:
 		
-		#add timeout logic
 		if state == 'candidate':
 			print("In candidate loop " + my_id)
 			# TODO add election stuff
 			term += 1
 			votes = 1
-			voted = False
 			curr_time = time.time()
 			while state == 'candidate' and (time.time() < curr_time + timeout):
 				
@@ -65,16 +63,8 @@ while True:
 						break
 
 				if msg['type'] == 'append':
-					if msg['term'] >= term and not voted:
+					if int(msg['term']) >= term:
 						curr_leader = msg['src']
-						response = {
-							'src': my_id, 
-							'dst': msg['src'],
-							'leader': curr_leader,
-							'type': 'ok',
-						}
-						sock.send(bytes(json.dumps(response), 'ascii'))
-						time.sleep(.2)
 						state = 'follower'
 
 
@@ -90,9 +80,9 @@ while True:
 				if time.time() + 1> last_time + timeout:
 					state = 'candidate'
 		
-				# For now, ignore get() and put() from clients
 				if msg['type'] in ['get', 'put']:
 					if msg['type'] == 'get':
+						print(msg)
 						response = {
 							'src': my_id, 
 							'dst': msg['src'],
@@ -102,6 +92,7 @@ while True:
 						}
 						sock.send(bytes(json.dumps(response), 'ascii'))
 					elif msg['type'] == 'put':
+						print(msg)
 						response = {
 							'src': my_id, 
 							'dst': msg['src'],
@@ -111,9 +102,10 @@ while True:
 						}						
 						sock.send(bytes(json.dumps(response), 'ascii'))
 				elif msg['type'] == 'append':
-					if msg['term'] >= term:
+					if int(msg['term']) >= term:
 						last_time = time.time()
 						curr_leader = msg['leader']
+						term = int(msg['term'])
 						response = {
 							'src': my_id, 
 							'dst': msg['src'],
@@ -129,6 +121,7 @@ while True:
 				clock = time.time()
 				if clock - last > .1:
 					for r in replica_ids:
+						print("Sending heartbeat " + my_id)
 						msg = {
 							'src': my_id, 
 							'dst': r,
@@ -144,7 +137,8 @@ while True:
 				msg = json.loads(msg_raw)
 
 				if msg['type'] == 'append':
-					if msg['term'] >= term:
+					if int(msg['term']) > term:
+						print("change of leader " + my_id + " " + msg['src'])
 						curr_leader = msg['leader']
 						response = {
 							'src': my_id, 
@@ -155,6 +149,7 @@ while True:
 						sock.send(bytes(json.dumps(response), 'ascii'))
 						state = 'follower'
 				elif msg['type'] == 'get':
+					print(msg)
 					if msg['key'] in data:
 						response = {
 							'src': my_id,
@@ -166,6 +161,7 @@ while True:
 						}
 						sock.send(bytes(json.dumps(response), 'ascii'))
 				elif msg['type'] == 'put':
+					print(msg)
 					data[msg['key']] = msg['value']
 					mapping = (msg['key'], msg['value'])
 					temp_dict = {term: mapping}
